@@ -1,30 +1,30 @@
 # -*- coding: utf-8 -*-
-"""诊断：中文光通信源(讯石/C114/OFweek)从 GitHub 海外 runner 是否可达 + 有无 RSS/可抓。"""
+"""诊断2：看中文站文章链接(href+标题)结构，便于写抓取规则。"""
 import re
 import requests
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
 H = {"User-Agent": UA}
 
-CANDS = {
-    "C114-home":   "https://www.c114.com.cn/",
-    "C114-rss":    "http://www.c114.com.cn/rss/",
-    "OFweek-fiber":"https://fiber.ofweek.com/",
-    "OFweek-rss":  "http://rss.ofweek.com/fiber.xml",
-    "ICCSZ-home":  "http://www.iccsz.com/",
-    "ICCSZ-rss":   "http://www.iccsz.com/rss.aspx",
-    "C114-news":   "https://www.c114.com.cn/news/",
+SITES = {
+    "OFweek": "https://fiber.ofweek.com/",
+    "ICCSZ":  "http://www.iccsz.com/",
+    "C114":   "https://www.c114.com.cn/news/",
 }
-
-for tag, url in CANDS.items():
+for name, url in SITES.items():
     try:
         r = requests.get(url, headers=H, timeout=20)
         r.encoding = r.apparent_encoding or "utf-8"
-        t = r.text
-        items = len(re.findall(r"<item\b", t, re.I))
-        # 抓几个像标题的中文链接文本
-        titles = re.findall(r'<a[^>]+href="[^"]*"[^>]*>([一-龥]{6,40})</a>', t)
-        print(f"[{tag}] HTTP {r.status_code} len={len(t)} rssItems={items} 中文链接样例={titles[:3]}")
+        pairs = re.findall(r'<a[^>]+href="([^"]+)"[^>]*>\s*([一-龥][^<]{7,40})\s*</a>', r.text)
+        print(f"=== {name} ({len(pairs)} candidate links) ===")
+        seen = set()
+        for href, title in pairs:
+            title = title.strip()
+            if title in seen:
+                continue
+            seen.add(title)
+            print(f"  {href[:70]}  ::  {title}")
+            if len(seen) >= 6:
+                break
     except Exception as e:
-        print(f"[{tag}] ERROR {type(e).__name__}: {str(e)[:80]}")
-    print("-" * 55)
+        print(f"[{name}] ERROR {e}")
