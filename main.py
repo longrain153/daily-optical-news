@@ -12,7 +12,7 @@ import smtplib
 import datetime as dt
 from email.mime.text import MIMEText
 from email.header import Header
-from email.utils import formataddr
+from email.utils import formataddr, parsedate_to_datetime
 
 import requests
 
@@ -33,10 +33,39 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 CN_FEEDS = [
     ("OFweek光通讯", "https://fiber.ofweek.com/", "https://fiber.ofweek.com"),
     ("讯石光通讯", "http://www.iccsz.com/", "http://www.iccsz.com"),
-    ("C114通信网", "https://www.c114.com.cn/news/", "https://www.c114.com.cn"),
 ]
 _CN_SKIP_KW = ["返回", "首页", "行业会议", "线上会议", "回放", "预约", "登录",
                "注册", "更多", "专题", "会展", "策划", "热点"]
+CN_MAX_AGE_DAYS = 5      # 中文源：只保留最近几天的文章（按 URL 日期过滤旧闻）
+
+
+def _url_date(url):
+    """从文章 URL 提取日期。返回 (date, 粒度'day'|'month') 或 (None, None)。"""
+    m = re.search(r"/(20\d{2})/(\d{2})/(\d{2})/", url)          # 讯石 /News/2026/06/05/
+    if m:
+        try:
+            return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))), "day"
+        except ValueError:
+            return None, None
+    m = re.search(r"/(20\d{2})-(\d{2})/", url)                  # OFweek /2026-06/
+    if m:
+        try:
+            return dt.date(int(m.group(1)), int(m.group(2)), 1), "month"
+        except ValueError:
+            return None, None
+    return None, None
+
+
+def _cn_recent(url, today):
+    """中文源按 URL 日期判断是否够新。无日期一律丢弃(多为导航/置顶老文)。"""
+    d, gran = _url_date(url)
+    if d is None:
+        return False
+    if gran == "day":
+        return 0 <= (today - d).days <= CN_MAX_AGE_DAYS
+    # 月粒度(OFweek)：保留本月或上月
+    prev = (today.replace(day=1) - dt.timedelta(days=1))
+    return (d.year, d.month) in ((today.year, today.month), (prev.year, prev.month))
 
 
 def beijing_now():
@@ -45,6 +74,25 @@ def beijing_now():
 
 def strip_tags(s):
     return re.sub(r"<[^>]+>", "", s or "").replace("&nbsp;", " ").strip()
+
+
+def _rss_recent(pub, days=10):
+    """RSS pubDate 是否在最近 days 天内；无法解析则保留(RSS 通常已按时间排序)。"""
+    if not pub:
+        return True
+    try:
+        d = parsedate_to_datetime(pub)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)
+        return (dt.datetime.now(dt.timezone.utc) - d).days <= days
+    except Exception:
+        try:
+            d = dt.datetime.fromisoformat(pub.replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=dt.timezone.utc)
+            return (dt.datetime.now(dt.timezone.utc) - d).days <= days
+        except Exception:
+            return True
 
 
 # ----------------------------------------------------------------------------
@@ -68,7 +116,8 @@ def fetch_articles():
                 title = strip_tags(grab("title"))
                 link = strip_tags(grab("link")) or strip_tags(grab("guid"))
                 summary = strip_tags(grab("description") or grab("summary"))
-                if title and link:
+                pub = grab("pubDate") or grab("published") or grab("updated") or grab("dc:date")
+                if title and link and _rss_recent(pub):
                     items.append({"source": name, "title": title,
                                   "url": link, "summary": summary[:300]})
         except Exception as e:
@@ -78,18 +127,20 @@ def fetch_articles():
 
 
 def fetch_cn_articles():
-    """抓中文光通信站列表页的(标题,链接)。无 RSS，正则提取中文标题链接。"""
+    """抓中文光通信站列表页(标题,链接)，按 URL 日期过滤掉旧闻/导航。"""
     out = []
+    today = beijing_now().date()
     for name, url, base in CN_FEEDS:
         try:
             r = requests.get(url, headers={"User-Agent": UA}, timeout=20)
             r.encoding = r.apparent_encoding or "utf-8"
-            seen = set()
+            seen, kept = set(), 0
             for href, title in re.findall(
                     r'<a[^>]+href="([^"]+)"[^>]*>\s*([一-龥][^<]{7,40})\s*</a>', r.text):
                 title = title.strip()
                 if title in seen or any(k in title for k in _CN_SKIP_KW):
                     continue
+                seen.add(title)
                 if href.startswith("//"):
                     link = "https:" + href
                 elif href.startswith("/"):
@@ -98,14 +149,16 @@ def fetch_cn_articles():
                     link = href
                 else:
                     continue
-                seen.add(title)
+                if not _cn_recent(link, today):       # 过滤旧闻/无日期
+                    continue
                 out.append({"source": name, "title": title, "url": link,
                             "summary": "", "cn": True})
-                if len(seen) >= 18:
+                kept += 1
+                if kept >= 15:
                     break
         except Exception as e:
             print(f"cn feed {name} failed:", e)
-    print(f"fetched {len(out)} CN articles from {len(CN_FEEDS)} sites")
+    print(f"fetched {len(out)} CN articles (recent only) from {len(CN_FEEDS)} sites")
     return out
 
 
