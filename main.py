@@ -28,6 +28,16 @@ FEEDS = [
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
+# 中文光通信源（无 RSS，抓 HTML 列表页；覆盖光模块/卫星/量子/中国厂家/资本市场）
+# 用户在国内可直接访问这些链接，故中文源条目不截图。
+CN_FEEDS = [
+    ("OFweek光通讯", "https://fiber.ofweek.com/", "https://fiber.ofweek.com"),
+    ("讯石光通讯", "http://www.iccsz.com/", "http://www.iccsz.com"),
+    ("C114通信网", "https://www.c114.com.cn/news/", "https://www.c114.com.cn"),
+]
+_CN_SKIP_KW = ["返回", "首页", "行业会议", "线上会议", "回放", "预约", "登录",
+               "注册", "更多", "专题", "会展", "策划", "热点"]
+
 
 def beijing_now():
     return dt.datetime.now(BJ)
@@ -67,6 +77,38 @@ def fetch_articles():
     return items
 
 
+def fetch_cn_articles():
+    """抓中文光通信站列表页的(标题,链接)。无 RSS，正则提取中文标题链接。"""
+    out = []
+    for name, url, base in CN_FEEDS:
+        try:
+            r = requests.get(url, headers={"User-Agent": UA}, timeout=20)
+            r.encoding = r.apparent_encoding or "utf-8"
+            seen = set()
+            for href, title in re.findall(
+                    r'<a[^>]+href="([^"]+)"[^>]*>\s*([一-龥][^<]{7,40})\s*</a>', r.text):
+                title = title.strip()
+                if title in seen or any(k in title for k in _CN_SKIP_KW):
+                    continue
+                if href.startswith("//"):
+                    link = "https:" + href
+                elif href.startswith("/"):
+                    link = base + href
+                elif href.startswith("http"):
+                    link = href
+                else:
+                    continue
+                seen.add(title)
+                out.append({"source": name, "title": title, "url": link,
+                            "summary": "", "cn": True})
+                if len(seen) >= 18:
+                    break
+        except Exception as e:
+            print(f"cn feed {name} failed:", e)
+    print(f"fetched {len(out)} CN articles from {len(CN_FEEDS)} sites")
+    return out
+
+
 # ----------------------------------------------------------------------------
 # 2. DeepSeek 筛选 + 归类 + 翻译 + 解读
 # ----------------------------------------------------------------------------
@@ -85,10 +127,14 @@ def deepseek_brief(date_str, articles):
         "- 光模块：800G/1.6T 等光模块，重点厂家 旭创Innolight/新易盛Eoptolink/Coherent/Lumentum 等\n"
         "- AI光互联：AI 数据中心光互联/CPO/硅光/共封装/光背板，重点 英伟达NVIDIA/Meta/Google/Microsoft 等\n"
         "- 光器件芯片：激光器/探测器/光芯片/DSP，重点 Coherent/Lumentum/源杰/光迅Accelink 等\n"
-        "- 卫星光通信：星间/星地激光通信\n"
-        "- 量子光通信：量子密钥分发/量子网络\n"
-        "排除与光通信无关的纯软件/消费电子/无关财经。把选中报道翻译为中文并简明摘要。"
-        "只依据给定报道，不编造。返回严格JSON。")
+        "- 卫星光通信：星间/星地激光通信、卫星互联网相关光通信\n"
+        "- 量子光通信：量子密钥分发QKD/量子网络/量子通信商用\n"
+        "- 资本市场：光通信/光互联相关公司的财报、业绩预告、股价大幅异动、融资、IPO/上市、"
+        "并购、大额订单/中标、产能扩张等资本市场信息（A股如中际旭创/新易盛/光迅/天孚/太辰光，"
+        "美股如 Coherent/Lumentum/Ciena，以及初创公司融资）\n"
+        "注意均衡覆盖各细分，尤其留意光模块、卫星光通信、量子光通信、资本市场的条目，不要只选AI/传输。"
+        "部分报道标题为中文(来自中文源)，照常处理。排除与光通信无关的纯软件/消费电子/无关社会新闻。"
+        "把选中报道翻译/整理为中文并简明摘要。只依据给定报道，不编造。返回严格JSON。")
     user = (
         f"日期：{date_str}\n\n报道列表(带序号)：\n" + art_txt +
         "\n\n请输出JSON，全部中文：\n"
@@ -96,11 +142,11 @@ def deepseek_brief(date_str, articles):
         '  "brief": "今日光通信行业综述2-3句",\n'
         '  "items": [\n'
         '    {"idx": 序号整数, "title_zh": "中文标题", '
-        '"sector": "光传输|光模块|AI光互联|光器件芯片|卫星光通信|量子光通信|其他", '
+        '"sector": "光传输|光模块|AI光互联|光器件芯片|卫星光通信|量子光通信|资本市场|其他", '
         '"summary_zh": "2-3句中文摘要", "impact": "对产业/相关公司的影响，一句"}\n'
         "  ]\n"
         "}\n"
-        "选择 6-12 条最相关的；idx 必须是列表中的序号。若没有相关内容则 items 为空数组。"
+        "选择 8-14 条最相关的，尽量覆盖多个细分；idx 必须是列表中的序号。若无相关内容则 items 为空数组。"
     )
     try:
         from openai import OpenAI
@@ -130,6 +176,7 @@ def resolve_items(articles, brief):
             out.append({
                 "title_zh": (it.get("title_zh") or a["title"]).strip(),
                 "title_en": a["title"], "url": a["url"], "source": a["source"],
+                "cn": a.get("cn", False),
                 "sector": (it.get("sector") or "其他").strip(),
                 "summary_zh": (it.get("summary_zh") or "").strip(),
                 "impact": (it.get("impact") or "").strip(),
@@ -177,6 +224,9 @@ def capture_screenshots(items, date_str):
         ctx = browser.new_context(viewport={"width": 900, "height": 640},
                                   user_agent=UA, locale="en-US")
         for i, it in enumerate(items):
+            if it.get("cn"):          # 中文源用户可直接访问，不截图
+                print(f"shot {i} skip (cn source)")
+                continue
             page = ctx.new_page()
             try:
                 page.goto(it["url"], wait_until="domcontentloaded", timeout=35000)
@@ -231,10 +281,11 @@ def prune_shots(keep=14):
 # ----------------------------------------------------------------------------
 # 3. 生成 HTML
 # ----------------------------------------------------------------------------
-SECTOR_ORDER = ["光传输", "光模块", "AI光互联", "光器件芯片", "卫星光通信", "量子光通信", "其他"]
+SECTOR_ORDER = ["光传输", "光模块", "AI光互联", "光器件芯片", "卫星光通信",
+                "量子光通信", "资本市场", "其他"]
 SECTOR_COLOR = {"光传输": "#1d4ed8", "光模块": "#047857", "AI光互联": "#be123c",
                 "光器件芯片": "#b45309", "卫星光通信": "#7c3aed",
-                "量子光通信": "#0891b2", "其他": "#6b7280"}
+                "量子光通信": "#0891b2", "资本市场": "#ca8a04", "其他": "#6b7280"}
 
 
 def build_html(date_str, weekday_cn, items, brief_text):
@@ -277,7 +328,7 @@ def build_html(date_str, weekday_cn, items, brief_text):
                 f'{impact}{shot_html}'
                 f'<div style="color:#9ca3af;font-size:12px;margin-top:7px;">来源：{it["source"]} · '
                 f'<a href="{read_link}" target="_blank" style="color:#2563eb;">{read_label} ›</a> · '
-                f'<a href="{it["url"]}" target="_blank" style="color:#9ca3af;">英文原站</a></div>'
+                f'<a href="{it["url"]}" target="_blank" style="color:#9ca3af;">{"原文" if it.get("cn") else "英文原站"}</a></div>'
                 f'</div>')
 
     if not items:
@@ -298,7 +349,7 @@ def build_html(date_str, weekday_cn, items, brief_text):
     </div>
     {body}
     <div style="margin-top:16px;padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;color:#6b7280;line-height:1.7;">
-      信息来自公开外媒/行业报道（The Next Platform、Light Reading、Fierce Network、DataCenterDynamics 等），由 DeepSeek 翻译与梳理，可能存在偏差或时效差，仅供参考，不构成投资建议。截图由本服务自动生成、托管于本站。
+      信息来自公开外媒/行业报道（The Next Platform、Light Reading、DataCenterDynamics、OFweek光通讯、讯石、C114 等），由 DeepSeek 翻译归类与梳理，可能存在偏差或时效差，仅供参考，不构成投资建议。英文源页面截图托管于本站；中文源可直接点「原文」访问。
     </div>
   </div>
   <div style="text-align:center;color:#9ca3af;font-size:12px;padding:16px;">光通信每日简报 · 云端自动推送 · {date_str}</div>
@@ -361,7 +412,7 @@ def main():
     dash = now.strftime("%Y-%m-%d")
     weekday_cn = "周" + "一二三四五六日"[now.weekday()]
 
-    articles = fetch_articles()
+    articles = fetch_articles() + fetch_cn_articles()
     if not articles:
         print("no articles; abort.")
         return
