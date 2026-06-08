@@ -465,6 +465,11 @@ def main():
     dash = now.strftime("%Y-%m-%d")
     weekday_cn = "周" + "一二三四五六日"[now.weekday()]
 
+    # 去重：定时触发时若今天已发布过，则跳过（多个 cron 冗余触发，只发一次）
+    if os.environ.get("SKIP_IF_DONE") and os.path.exists(f"docs/{dash}.html"):
+        print(f"{dash} already published today; skip (idempotent).")
+        return
+
     articles = fetch_articles() + fetch_cn_articles()
     if not articles:
         print("no articles; abort.")

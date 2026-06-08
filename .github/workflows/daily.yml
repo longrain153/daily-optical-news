@@ -2,9 +2,11 @@ name: 光通信每日简报
 
 on:
   schedule:
-    # 北京时间约 07:33 = UTC 23:33（前一天）。每天运行。
-    # 用非整点(:33)避开 GitHub 定时整点拥堵的延迟/跳过。
+    # 北京约 07:33 / 08:03 / 08:33 三次冗余触发（UTC 23:33 / 00:03 / 00:33）。
+    # GitHub 定时常丢任务，多触发几次提高命中率；配合 SKIP_IF_DONE 去重，当天只发一次。
     - cron: "33 23 * * *"
+    - cron: "3 0 * * *"
+    - cron: "33 0 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -33,6 +35,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           PAGES_BASE: https://longrain153.github.io/daily-optical-news
+          SKIP_IF_DONE: ${{ github.event_name == 'schedule' && '1' || '' }}
         run: python main.py
 
       - name: Publish to GitHub Pages
